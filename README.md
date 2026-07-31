@@ -180,10 +180,10 @@ Lets send a Notification.
 The result is the response itself, its format is:
 
 ```erlang
--type response()  :: { integer()          % HTTP2 Code
-                     , [term()]           % Response Headers
-                     , [term()] | no_body % Response Body
-                     } | timeout.
+-type response()  :: { integer()            % HTTP2 Code
+                     , [term()]             % Response Headers
+                     , binary() | no_body   % Response Body
+                     } | {error, term()}.
 ```
 
 And that's all.
@@ -233,8 +233,11 @@ We can use this token for an entire hour, after that we will receive something l
 
 ## Pushing notifications
 
-*NOTE* in order to push notifications, in both ways, we _must_ call `apns:push_notification/3,4` and `apns:push_notification_token/4,5` from the same
-process which created the connection. If we try to do it from a different one we will get an error `{error, not_connection_owner}`.
+`apns:push_notification/3,4` and `apns:push_notification_token/4,5` can be called from any process, not only
+the one that created the connection. Each request gets its own HTTP2 stream and is replied to individually.
+
+Note that the process which created the connection is still the one that receives the `{reconnecting, ServerPid}`
+and `{connection_up, ServerPid}` messages described in the [Reconnection](#reconnection) section.
 
 ## Reconnection
 

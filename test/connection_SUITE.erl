@@ -17,8 +17,8 @@
         , push_notification_token/1
         , push_notification_json_body/1
         , generate_token_jwt_claims/1
+        , push_notification_from_any_process/1
         , push_notification_timeout/1
-        , restrict_calls_to_owner/1
         , default_headers/1
         , test_coverage/1
         ]).
@@ -41,8 +41,8 @@ all() ->  [ default_connection
           , push_notification_token
           , push_notification_json_body
           , generate_token_jwt_claims
+          , push_notification_from_any_process
           , push_notification_timeout
-          , restrict_calls_to_owner
           , default_headers
           , test_coverage
           ].
@@ -210,29 +210,26 @@ push_notification(_Config) ->
              },
   Notification = #{<<"aps">> => #{<<"alert">> => <<"you have a message">>}},
   DeviceId = <<"device_id">>,
-  ok = mock_gun_post(),
+  ok = mock_gun_cancel(),
   ResponseCode = 200,
   ResponseHeaders = [{<<"apns-id">>, <<"apnsid">>}],
-  ok = mock_gun_await({response, fin, ResponseCode, ResponseHeaders}),
+  ok = mock_gun_post_responding({fin, ResponseCode, ResponseHeaders}),
   {ResponseCode, ResponseHeaders, no_body} =
     apns:push_notification(ConnectionName, DeviceId, Notification, Headers),
 
   %% Now mock an error from APNs
-  [_] = meck:unload(),
-  ok = mock_gun_post(),
   ErrorCode = 400,
   ErrorHeaders = [{<<"apns-id">>, <<"apnsid2">>}],
   ErrorBody = <<"{\"reason\":\"BadTopic\"}">>,
-  ok = mock_gun_await({response, nofin, ErrorCode, ErrorHeaders}),
-  ok = mock_gun_await_body(ErrorBody),
+  ok = mock_gun_post_responding({nofin, ErrorCode, ErrorHeaders, ErrorBody}),
 
-  {ErrorCode, ErrorHeaders, ErrorBodyDecoded} =
+  {ErrorCode, ErrorHeaders, ErrorBody} =
     apns:push_notification(ConnectionName, DeviceId, Notification),
-  {ErrorCode, ErrorHeaders, ErrorBodyDecoded} =
+  {ErrorCode, ErrorHeaders, ErrorBody} =
     apns:push_notification(ServerPid, DeviceId, Notification),
 
   ok = close_connection(ConnectionName),
-  [_] = meck:unload(),
+  _ = meck:unload(),
   ok.
 
 -spec push_notification_token(config()) -> ok.
@@ -251,10 +248,10 @@ push_notification_token(_Config) ->
   ok = maybe_mock_apns_os(),
   Token = apns:generate_token(<<"TeamId">>, <<"KeyId">>),
 
-  ok = mock_gun_post(),
+  ok = mock_gun_cancel(),
   ResponseCode = 200,
   ResponseHeaders = [{<<"apns-id">>, <<"apnsid2">>}],
-  ok = mock_gun_await({response, fin, ResponseCode, ResponseHeaders}),
+  ok = mock_gun_post_responding({fin, ResponseCode, ResponseHeaders}),
   {ResponseCode, ResponseHeaders, no_body} =
     apns:push_notification_token( ConnectionName
                                 , Token
@@ -262,7 +259,7 @@ push_notification_token(_Config) ->
                                 , Notification
                                 , Headers
                                 ),
-  {ResponseCode, ResponseHeaders, _Body} =
+  {ResponseCode, ResponseHeaders, no_body} =
     apns:push_notification_token( ServerPid
                                 , Token
                                 , DeviceId
@@ -327,10 +324,11 @@ generate_token_jwt_claims(_Config) ->
   _ = meck:unload(),
   ok.
 
--spec restrict_calls_to_owner(config()) -> ok.
-restrict_calls_to_owner(_Config) ->
+-spec push_notification_from_any_process(config()) -> ok.
+push_notification_from_any_process(_Config) ->
   ok = mock_gun_open(),
-  ok = mock_gun_post(),
+  ok = mock_gun_cancel(),
+  ok = mock_gun_post_responding({fin, 200, []}),
   Self = self(),
 
   SpawnedPid = spawn(fun() ->
@@ -342,12 +340,19 @@ restrict_calls_to_owner(_Config) ->
     {SpawnedPid, ServerPid} -> ServerPid
   end,
 
-  {error, not_connection_owner} = apns:push_notification(ConnectionPid, <<"device_id">>, #{}, #{}),
-  {error, not_connection_owner} =
-    apns:push_notification_token(ConnectionPid, <<"token">>, <<"device_id">>, #{}, #{}),
+  Notification = #{<<"aps">> => #{<<"alert">> => <<"from another process">>}},
+  {200, [], no_body} =
+    apns:push_notification(ConnectionPid, <<"device_id">>, Notification, #{}),
+  {200, [], no_body} =
+    apns:push_notification_token( ConnectionPid
+                                , <<"token">>
+                                , <<"device_id">>
+                                , Notification
+                                , #{}
+                                ),
 
   ok = close_connection(ConnectionPid),
-  [_] = meck:unload(),
+  _ = meck:unload(),
   ok.
 
 -spec push_notification_timeout(config()) -> ok.
@@ -358,13 +363,14 @@ push_notification_timeout(_Config) ->
 
   ok = mock_gun_open(),
   ok = mock_gun_post(),
+  ok = mock_gun_cancel(),
   ConnectionName = ?FUNCTION_NAME,
   {ok, _ApnsPid} = apns:connect(cert, ConnectionName),
   Notification = #{<<"aps">> => #{<<"alert">> => <<"another message">>}},
   DeviceId = <<"device_id">>,
-  timeout = apns:push_notification(ConnectionName, DeviceId, Notification),
+  {error, timeout} = apns:push_notification(ConnectionName, DeviceId, Notification),
   ok = close_connection(ConnectionName),
-  [_] = meck:unload(),
+  _ = meck:unload(),
 
   % turn back the original timeout
   ok = application:set_env(apns, timeout, OriginalTimeout),
@@ -477,16 +483,20 @@ pushed_body() ->
     ct:fail("gun:post/4 was never called")
   end.
 
--spec mock_gun_await(term()) -> ok.
-mock_gun_await(Result) ->
-  meck:expect(gun, await, fun(_, _, _) ->
-    Result
-  end).
-
--spec mock_gun_await_body(term()) -> ok.
-mock_gun_await_body(Body) ->
-  meck:expect(gun, await_body, fun(_, _, _) ->
-    {ok, Body}
+-spec mock_gun_post_responding({fin, non_neg_integer(), [term()]}
+                              | {nofin, non_neg_integer(), [term()], binary()}) -> ok.
+mock_gun_post_responding({fin, Status, Headers}) ->
+  meck:expect(gun, post, fun(GunPid, _Path, _Headers, _Body) ->
+    StreamRef = make_ref(),
+    self() ! {gun_response, GunPid, StreamRef, fin, Status, Headers},
+    StreamRef
+  end);
+mock_gun_post_responding({nofin, Status, Headers, Body}) ->
+  meck:expect(gun, post, fun(GunPid, _Path, _Headers, _Body) ->
+    StreamRef = make_ref(),
+    self() ! {gun_response, GunPid, StreamRef, nofin, Status, Headers},
+    self() ! {gun_data, GunPid, StreamRef, fin, Body},
+    StreamRef
   end).
 
 -spec maybe_mock_apns_os() -> ok.
