@@ -115,7 +115,7 @@ push_notification(ConnectionId, DeviceId, JSONMap) ->
                        , headers()
                        ) -> response() | {error, not_connection_owner}.
 push_notification(ConnectionId, DeviceId, JSONMap, Headers) ->
-  Notification = jsx:encode(JSONMap),
+  Notification = iolist_to_binary(json:encode(JSONMap)),
   apns_connection:push_notification( ConnectionId
                                    , DeviceId
                                    , Notification
@@ -141,7 +141,7 @@ push_notification_token(ConnectionId, Token, DeviceId, JSONMap) ->
                              , headers()
                              ) -> response() | {error, not_connection_owner}.
 push_notification_token(ConnectionId, Token, DeviceId, JSONMap, Headers) ->
-  Notification = jsx:encode(JSONMap),
+  Notification = iolist_to_binary(json:encode(JSONMap)),
   apns_connection:push_notification( ConnectionId
                                    , Token
                                    , DeviceId
@@ -156,15 +156,15 @@ generate_token(TeamId, KeyId) ->
 -spec generate_token(binary(), binary(), string()) -> token().
 generate_token(TeamId, KeyId, KeyPath) ->
   Algorithm = <<"ES256">>,
-  Header = jsx:encode([ {alg, Algorithm}
-                      , {typ, <<"JWT">>}
-                      , {kid, KeyId}
-                      ]),
-  Payload = jsx:encode([ {iss, TeamId}
-                       , {iat, apns_utils:epoch()}
-                       ]),
-  HeaderEncoded = base64url:encode(Header),
-  PayloadEncoded = base64url:encode(Payload),
+  Header = json:encode(#{ alg => Algorithm
+                        , typ => <<"JWT">>
+                        , kid => KeyId
+                        }),
+  Payload = json:encode(#{ iss => TeamId
+                         , iat => apns_utils:epoch()
+                         }),
+  HeaderEncoded = base64url:encode(iolist_to_binary(Header)),
+  PayloadEncoded = base64url:encode(iolist_to_binary(Payload)),
   DataEncoded = <<HeaderEncoded/binary, $., PayloadEncoded/binary>>,
   Signature = apns_utils:sign(DataEncoded, KeyPath),
   <<DataEncoded/binary, $., Signature/binary>>.

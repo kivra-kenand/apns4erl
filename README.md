@@ -18,7 +18,7 @@ If you find any **bugs** or have a **problem** while using Apns4erl, please [ope
 
 ## Requirements
 - You must have installed an updated Openssl version or, at least, be sure it supports TLS 1.2+. New APNs server only supports connections over TLS 1.2+.
-- Erlang R19+
+- Erlang/OTP 27+ (JSON encoding uses the `json` module from stdlib, introduced in OTP 27)
 
 ## Important Links
 
