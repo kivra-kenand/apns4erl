@@ -15,6 +15,8 @@
         , gun_connection_killed/1
         , push_notification/1
         , push_notification_token/1
+        , push_notification_json_body/1
+        , generate_token_jwt_claims/1
         , push_notification_timeout/1
         , restrict_calls_to_owner/1
         , default_headers/1
@@ -37,6 +39,8 @@ all() ->  [ default_connection
           , gun_connection_killed
           , push_notification
           , push_notification_token
+          , push_notification_json_body
+          , generate_token_jwt_claims
           , push_notification_timeout
           , restrict_calls_to_owner
           , default_headers
@@ -276,6 +280,53 @@ push_notification_token(_Config) ->
   _ = meck:unload(),
   ok.
 
+-spec push_notification_json_body(config()) -> ok.
+push_notification_json_body(_Config) ->
+  ok = mock_gun_open(),
+  ConnectionName = ?FUNCTION_NAME,
+  {ok, _ServerPid} = apns:connect(cert, ConnectionName),
+  ok = mock_gun_cancel(),
+  ok = mock_gun_post_capturing(self()),
+  Headers = #{apns_topic => <<"net.inaka.myapp">>},
+  DeviceId = <<"device_id">>,
+
+  BinaryKeys = #{<<"aps">> => #{ <<"alert">> => <<"you have a message">>
+                               , <<"badge">> => 3
+                               }},
+  {200, [], no_body} =
+    apns:push_notification(ConnectionName, DeviceId, BinaryKeys, Headers),
+  BinaryKeysBody = pushed_body(),
+  true = is_binary(BinaryKeysBody),
+  BinaryKeys = json:decode(BinaryKeysBody),
+
+  AtomKeys = #{aps => #{alert => <<"hi">>, 'content-available' => 1}},
+  {200, [], no_body} =
+    apns:push_notification(ConnectionName, DeviceId, AtomKeys, Headers),
+  #{<<"aps">> := #{ <<"alert">>             := <<"hi">>
+                  , <<"content-available">> := 1
+                  }} = json:decode(pushed_body()),
+
+  ok = close_connection(ConnectionName),
+  _ = meck:unload(),
+  ok.
+
+-spec generate_token_jwt_claims(config()) -> ok.
+generate_token_jwt_claims(_Config) ->
+  ok = maybe_mock_apns_os(),
+  Token = apns:generate_token(<<"THEATEAM">>, <<"KEYID12345">>),
+  [Header, Payload, Signature] = binary:split(Token, <<".">>, [global]),
+  #{ <<"alg">> := <<"ES256">>
+   , <<"typ">> := <<"JWT">>
+   , <<"kid">> := <<"KEYID12345">>
+   } = json:decode(base64url:decode(Header)),
+  #{ <<"iss">> := <<"THEATEAM">>
+   , <<"iat">> := Iat
+   } = json:decode(base64url:decode(Payload)),
+  true = is_integer(Iat),
+  true = byte_size(Signature) > 0,
+  _ = meck:unload(),
+  ok.
+
 -spec restrict_calls_to_owner(config()) -> ok.
 restrict_calls_to_owner(_Config) ->
   ok = mock_gun_open(),
@@ -404,6 +455,27 @@ mock_gun_post() ->
   meck:expect(gun, post, fun(_, _, _, _) ->
     make_ref()
   end).
+
+-spec mock_gun_post_capturing(pid()) -> ok.
+mock_gun_post_capturing(TestPid) ->
+  meck:expect(gun, post, fun(GunPid, _Path, _Headers, Body) ->
+    StreamRef = make_ref(),
+    TestPid ! {pushed_body, Body},
+    self() ! {gun_response, GunPid, StreamRef, fin, 200, []},
+    StreamRef
+  end).
+
+-spec mock_gun_cancel() -> ok.
+mock_gun_cancel() ->
+  meck:expect(gun, cancel, fun(_, _) -> ok end).
+
+-spec pushed_body() -> binary().
+pushed_body() ->
+  receive
+    {pushed_body, Body} -> Body
+  after 1000 ->
+    ct:fail("gun:post/4 was never called")
+  end.
 
 -spec mock_gun_await(term()) -> ok.
 mock_gun_await(Result) ->
