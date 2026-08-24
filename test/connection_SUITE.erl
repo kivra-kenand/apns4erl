@@ -134,15 +134,14 @@ gun_connection_lost(_Config) ->
   GunPid = apns_connection:gun_pid(ConnectionName),
   true = is_process_alive(GunPid),
   GunPid ! {crash, ServerPid},
-  ktn_task:wait_for(fun() -> is_process_alive(GunPid) end, false),
-  ktn_task:wait_for(fun() ->
+  wait_for(fun() -> is_process_alive(GunPid) end, false),
+  wait_for(fun() ->
       apns_connection:gun_pid(ConnectionName) == GunPid
     end, false),
   GunPid2 = apns_connection:gun_pid(ConnectionName),
   true = is_process_alive(GunPid2),
   true = (GunPid =/= GunPid2),
   ok = close_connection(ConnectionName),
-  ktn_task:wait_for(fun() -> is_process_alive(GunPid2) end, false),
   [_] = meck:unload(),
   ok.
 
@@ -159,7 +158,7 @@ gun_connection_lost_timeout(_Config) ->
   end),
 
   GunPid ! {crash, ServerPid},
-  ktn_task:wait_for(fun() ->
+  wait_for(fun() ->
       apns_connection:gun_pid(ConnectionName) == GunPid
     end, false),
 
@@ -167,7 +166,7 @@ gun_connection_lost_timeout(_Config) ->
   true = (GunPid =/= GunPid2),
 
   GunPid2 ! {crash, ServerPid},
-  ktn_task:wait_for(fun() ->
+  wait_for(fun() ->
       apns_connection:gun_pid(ConnectionName) == GunPid2
     end, false),
 
@@ -187,14 +186,13 @@ gun_connection_killed(_Config) ->
   GunPid = apns_connection:gun_pid(ConnectionName),
   true = is_process_alive(GunPid),
   exit(GunPid, kill),
-  ktn_task:wait_for(fun() -> is_process_alive(GunPid) end, false),
-  ktn_task:wait_for(fun() ->
+  wait_for(fun() -> is_process_alive(GunPid) end, false),
+  wait_for(fun() ->
       apns_connection:gun_pid(ConnectionName) == GunPid
     end, false),
   GunPid2 = apns_connection:gun_pid(ConnectionName),
   true = (GunPid =/= GunPid2),
   ok = close_connection(ConnectionName),
-  ktn_task:wait_for(fun() -> is_process_alive(GunPid2) end, false),
   [_] = meck:unload(),
   ok.
 
@@ -338,6 +336,8 @@ push_notification_from_any_process(_Config) ->
 
   ConnectionPid = receive
     {SpawnedPid, ServerPid} -> ServerPid
+  after 5000 ->
+    ct:fail(timeout_waiting_for_connection)
   end,
 
   Notification = #{<<"aps">> => #{<<"alert">> => <<"from another process">>}},
@@ -440,12 +440,30 @@ test_coverage(_Config) ->
 %% Internal Functions
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+-spec wait_for(fun(() -> term()), term()) -> ok.
+wait_for(Fun, Expected) ->
+  wait_for(Fun, Expected, 50).
+
+-spec wait_for(fun(() -> term()), term(), non_neg_integer()) -> ok.
+wait_for(_Fun, Expected, 0) ->
+  ct:fail({timeout_waiting_for, Expected});
+wait_for(Fun, Expected, Retries) ->
+  case Fun() of
+    Expected ->
+      ok;
+    _ ->
+      ok = timer:sleep(100),
+      wait_for(Fun, Expected, Retries - 1)
+  end.
+
 -spec test_function() -> ok.
 test_function() ->
   receive
     normal           -> ok;
     {crash, Pid}     -> Pid ! {gun_down, self(), http2, closed, [], []};
     _                -> test_function()
+  after 60000 ->
+    test_function()
   end.
 
 -spec mock_gun_open() -> ok.
@@ -512,7 +530,7 @@ close_connection(ConnectionId) when is_atom(ConnectionId) ->
   close_connection(ConnectionPid);
 close_connection(ConnectionId) when is_pid(ConnectionId) ->
   ok = apns:close_connection(ConnectionId),
-  ktn_task:wait_for(fun() ->
+  wait_for(fun() ->
       is_process_alive(ConnectionId)
     end, false),
   ok.
